@@ -1,0 +1,10 @@
+{
+  "name": "Remix Remix LINKUP",
+  "description": "Stay Connected Beyond Boundaries — an offline-first platform for communication, navigation, personal safety, wallet transactions, and file sharing.",
+  "requestFramePermissions": [
+    "geolocation"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
