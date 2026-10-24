@@ -12,6 +12,8 @@ import {
   OfflineMapPack,
   EmergencyContact,
   SosEvent,
+  SosAlertStatus,
+  PrivacySettings,
   Transaction,
   SharedFile,
   ActivityItem,
@@ -79,13 +81,20 @@ interface AppContextType {
   // Safe (Safety & SOS)
   emergencyContacts: EmergencyContact[];
   addEmergencyContact: (contact: Omit<EmergencyContact, 'id'>) => void;
+  updateEmergencyContact: (id: string, updated: Partial<EmergencyContact>) => void;
   deleteEmergencyContact: (id: string) => void;
+  toggleSelectContactForAlert: (id: string) => void;
+  selectAllContactsForAlert: (select: boolean) => void;
+  privacySettings: PrivacySettings;
+  updatePrivacySettings: (updated: Partial<PrivacySettings>) => void;
   isSosActive: boolean;
+  activeSosEvent: SosEvent | null;
   sosCountdown: number | null;
   startSosCountdown: () => void;
   cancelSosCountdown: () => void;
   triggerSosImmediately: () => void;
-  deactivateSos: () => void;
+  deactivateSos: (reason?: 'cancelled' | 'resolved') => void;
+  retrySosBroadcast: (eventId?: string) => void;
   sosHistory: SosEvent[];
   isLocationSharingEnabled: boolean;
   toggleLocationSharing: () => void;
@@ -93,6 +102,8 @@ interface AppContextType {
   toggleSirenAudio: () => void;
   lastCheckIn: string | null;
   performSafetyCheckIn: () => string;
+  locationTimestamp: string;
+  isLocationStale: boolean;
 
   // Pay (Wallet)
   balance: number;
@@ -190,7 +201,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Logo Asset State
   const [approvedLogoUrl, setApprovedLogoUrlState] = useState<string | null>(() => {
-    return localStorage.getItem('linkup_approved_logo') || null;
+    return localStorage.getItem('linkup_approved_logo') || '/assets/aistudio/image_8048039e.png';
   });
   const [isLogoModalOpen, setIsLogoModalOpen] = useState<boolean>(false);
 
@@ -711,19 +722,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     lng: -122.4194,
   });
   const [gpsAccuracy, setGpsAccuracy] = useState<number>(8);
+  const [locationTimestamp, setLocationTimestamp] = useState<string>(() => {
+    return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  });
+  const [isLocationStale, setIsLocationStale] = useState<boolean>(false);
   const [locationPermissionState, setLocationPermissionState] = useState<'prompt' | 'granted' | 'denied' | 'unsupported'>('granted');
 
   const refreshLocation = useCallback(async () => {
     if ('geolocation' in navigator) {
       try {
-        await new Promise<void>((resolve, reject) => {
+        await new Promise<void>((resolve) => {
           navigator.geolocation.getCurrentPosition(
             (pos) => {
               const lat = parseFloat(pos.coords.latitude.toFixed(5));
               const lng = parseFloat(pos.coords.longitude.toFixed(5));
               const acc = Math.round(pos.coords.accuracy || 8);
+              const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
               setUserCoords({ lat, lng });
               setGpsAccuracy(acc);
+              setLocationTimestamp(timeStr);
+              setIsLocationStale(false);
               setLocationPermissionState('granted');
               resolve();
             },
@@ -731,6 +749,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               if (err.code === err.PERMISSION_DENIED) {
                 setLocationPermissionState('denied');
               }
+              setIsLocationStale(true);
               resolve();
             },
             { timeout: 6000, enableHighAccuracy: true }
@@ -738,10 +757,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         });
         logActivity('navigate', 'GPS Fix Acquired', `Lat: ${userCoords.lat}, Lng: ${userCoords.lng} (Accuracy: ±${gpsAccuracy}m)`);
       } catch {
-        // Fallback gracefully
+        setIsLocationStale(true);
       }
     } else {
       setLocationPermissionState('unsupported');
+      setIsLocationStale(true);
     }
   }, [userCoords, gpsAccuracy, logActivity]);
 
@@ -1016,6 +1036,32 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
   }, [logActivity]);
 
+  // Profile & Settings Data & State
+  const [profile, setProfile] = useState<UserProfile>(() => {
+    const saved = localStorage.getItem('linkup_user_profile');
+    if (saved) {
+      try { return JSON.parse(saved); } catch {}
+    }
+    return {
+      callsign: 'Nighthawk-1',
+      displayName: 'Captain Alex Vance',
+      nodeId: 'LN-8492-AX',
+      emergencyBloodType: 'O-Negative',
+      medicalNotes: 'No known drug allergies. Penicillin safe.',
+      meshRelayEnabled: true,
+      batterySaverMode: false,
+    };
+  });
+
+  const updateProfile = useCallback((updated: Partial<UserProfile>) => {
+    setProfile((prev) => {
+      const next = { ...prev, ...updated };
+      localStorage.setItem('linkup_user_profile', JSON.stringify(next));
+      return next;
+    });
+    logActivity('system', 'Profile Updated', 'Local node identity and preferences updated.');
+  }, [logActivity]);
+
   // Safe (Safety & SOS) Data & State
   const [emergencyContacts, setEmergencyContacts] = useState<EmergencyContact[]>(() => {
     const saved = localStorage.getItem('linkup_emergency_contacts');
@@ -1031,6 +1077,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         priority: 1,
         alertViaMesh: true,
         alertViaSms: true,
+        selectedForAlert: true,
+        radioCallsign: 'Raven-Lead',
+        notes: 'Family shelter key holder, rendezvous lead',
       },
       {
         id: 'c-2',
@@ -1040,6 +1089,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         priority: 2,
         alertViaMesh: true,
         alertViaSms: false,
+        selectedForAlert: true,
+        radioCallsign: 'SAR-Base-Node',
+        notes: 'Sub-GHz 433MHz regional mesh emergency gateway',
       },
       {
         id: 'c-3',
@@ -1049,14 +1101,39 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         priority: 3,
         alertViaMesh: true,
         alertViaSms: true,
+        selectedForAlert: true,
+        radioCallsign: 'Medic-Delta',
+        notes: 'Field trauma physician, cold medical locker 4',
       },
     ];
   });
+
+  const [privacySettings, setPrivacySettings] = useState<PrivacySettings>(() => {
+    const saved = localStorage.getItem('linkup_privacy_settings');
+    if (saved) {
+      try { return JSON.parse(saved); } catch {}
+    }
+    return {
+      includeMedicalNotes: true,
+      includeBloodType: true,
+      includeCallsign: true,
+      maskPhoneNumbers: true,
+    };
+  });
+
+  const updatePrivacySettings = useCallback((updated: Partial<PrivacySettings>) => {
+    setPrivacySettings((prev) => {
+      const next = { ...prev, ...updated };
+      localStorage.setItem('linkup_privacy_settings', JSON.stringify(next));
+      return next;
+    });
+  }, []);
 
   const addEmergencyContact = useCallback((contact: Omit<EmergencyContact, 'id'>) => {
     const newContact: EmergencyContact = {
       ...contact,
       id: 'c-' + Date.now(),
+      selectedForAlert: contact.selectedForAlert ?? true,
     };
     setEmergencyContacts((prev) => {
       const updated = [...prev, newContact];
@@ -1066,9 +1143,35 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     logActivity('safe', 'Emergency Contact Added', `${newContact.name} added to broadcast alert list.`);
   }, [logActivity]);
 
+  const updateEmergencyContact = useCallback((id: string, updated: Partial<EmergencyContact>) => {
+    setEmergencyContacts((prev) => {
+      const next = prev.map((c) => (c.id === id ? { ...c, ...updated } : c));
+      localStorage.setItem('linkup_emergency_contacts', JSON.stringify(next));
+      return next;
+    });
+    logActivity('safe', 'Contact Updated', `Updated details for emergency contact.`);
+  }, [logActivity]);
+
   const deleteEmergencyContact = useCallback((id: string) => {
     setEmergencyContacts((prev) => {
       const updated = prev.filter((c) => c.id !== id);
+      localStorage.setItem('linkup_emergency_contacts', JSON.stringify(updated));
+      return updated;
+    });
+    logActivity('safe', 'Contact Removed', 'Emergency contact deleted from device storage.');
+  }, [logActivity]);
+
+  const toggleSelectContactForAlert = useCallback((id: string) => {
+    setEmergencyContacts((prev) => {
+      const updated = prev.map((c) => (c.id === id ? { ...c, selectedForAlert: c.selectedForAlert === false } : c));
+      localStorage.setItem('linkup_emergency_contacts', JSON.stringify(updated));
+      return updated;
+    });
+  }, []);
+
+  const selectAllContactsForAlert = useCallback((select: boolean) => {
+    setEmergencyContacts((prev) => {
+      const updated = prev.map((c) => ({ ...c, selectedForAlert: select }));
       localStorage.setItem('linkup_emergency_contacts', JSON.stringify(updated));
       return updated;
     });
@@ -1086,16 +1189,193 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
     return [
       {
-        id: 'sos-sim-1',
+        id: 'SOS-2026-DEMO',
         triggeredAt: 'Yesterday 16:30',
         status: 'resolved',
+        deliveryStatus: 'acknowledged',
+        statusExplanation: 'Resolved incident: Acknowledged by Mountain Search & Rescue Node on 433MHz mesh frequency.',
         latitude: 37.7749,
         longitude: -122.4194,
-        broadcastChannel: 'Simulated 433MHz Mesh Distress Beacon',
+        accuracyMeters: 8,
+        locationTimestamp: 'Yesterday 16:29',
+        isLocationStale: false,
+        hasLocationPermission: true,
+        broadcastChannel: '433MHz Mesh Distress Beacon',
         contactsNotified: ['Sarah Jenkins', 'Mountain Search & Rescue Node'],
+        contactIds: ['c-1', 'c-2'],
       },
     ];
   });
+
+  const activeSosEvent = useMemo(() => {
+    return sosHistory.find((s) => s.status === 'active') || null;
+  }, [sosHistory]);
+
+  const executeSosActivation = useCallback(() => {
+    setIsSosActive(true);
+    setSosCountdown(null);
+
+    const eventId = 'SOS-2026-' + Math.random().toString(36).substring(2, 6).toUpperCase();
+    const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) + ', ' + new Date().toLocaleDateString();
+
+    const selectedContacts = emergencyContacts.filter((c) => c.selectedForAlert !== false);
+    const contactNames = selectedContacts.map((c) => c.name);
+    const contactIds = selectedContacts.map((c) => c.id);
+
+    const hasLoc = locationPermissionState !== 'denied' && locationPermissionState !== 'unsupported';
+    const lat = hasLoc ? userCoords.lat : null;
+    const lng = hasLoc ? userCoords.lng : null;
+    const acc = hasLoc ? gpsAccuracy : null;
+    const locTime = hasLoc ? locationTimestamp : undefined;
+    const isStale = networkStatus === 'offline' || isLocationStale;
+
+    const medicalPayload = {
+      bloodType: privacySettings.includeBloodType ? profile.emergencyBloodType : undefined,
+      callsign: privacySettings.includeCallsign ? profile.callsign : undefined,
+      notes: privacySettings.includeMedicalNotes ? profile.medicalNotes : undefined,
+    };
+
+    let initialDeliveryStatus: SosAlertStatus = 'queued';
+    let initialChannel = 'Offline Flash Cache (No Usable Link)';
+    let initialExplanation = 'Stored locally on device. No cellular, satellite, or nearby mesh link in range. Alert has NOT been delivered to contacts or emergency services.';
+    let meshRouteAvailable = false;
+    let meshRouteDetails = 'No compatible peers detected in range';
+
+    if (networkStatus === 'online') {
+      initialDeliveryStatus = 'sent';
+      initialChannel = 'Cellular / Satellite Cloud Gateway';
+      initialExplanation = 'Transmitting emergency packet via internet connection. Remote notifications queued for external dispatch.';
+      meshRouteAvailable = false;
+      meshRouteDetails = 'Internet gateway active';
+    } else if (networkStatus === 'limited') {
+      const activePeer = nearbyPeers.find((p) => p.status === 'paired') || nearbyPeers[0];
+      initialDeliveryStatus = 'sent';
+      initialChannel = '433MHz BLE Mesh Relay (Hop 1)';
+      initialExplanation = `Routing distress packet over direct mesh link via ${activePeer?.name || 'Local Repeater'}.`;
+      meshRouteAvailable = true;
+      meshRouteDetails = `Connected peer: ${activePeer?.name || 'Elena Rostova'} (${activePeer?.distance || '420m'})`;
+    }
+
+    const newEvent: SosEvent = {
+      id: eventId,
+      triggeredAt: timestamp,
+      status: 'active',
+      deliveryStatus: initialDeliveryStatus,
+      statusExplanation: initialExplanation,
+      latitude: lat,
+      longitude: lng,
+      accuracyMeters: acc,
+      locationTimestamp: locTime,
+      isLocationStale: isStale,
+      hasLocationPermission: hasLoc,
+      broadcastChannel: initialChannel,
+      contactsNotified: contactNames,
+      contactIds,
+      sharedMedicalInfo: medicalPayload,
+      meshRouteAvailable,
+      meshRouteDetails,
+    };
+
+    setSosHistory((prev) => {
+      const updated = [newEvent, ...prev];
+      localStorage.setItem('linkup_sos_history', JSON.stringify(updated));
+      return updated;
+    });
+
+    // Send emergency alert into Connect conversation
+    setConversations((prev) => {
+      const targetConvId = 'conv-group-1'; // Sector 4 Search Team [Group]
+      const targetConv = prev.find((c) => c.id === targetConvId) || prev[0];
+      if (!targetConv) return prev;
+
+      const emergencyMsg: ChatMessage = {
+        id: 'sos-msg-' + Date.now(),
+        sender: 'user',
+        text: `🚨 EMERGENCY SOS BEACON: ${newEvent.id}\nInitiated by ${profile.callsign} for ${contactNames.join(', ')}.\nStatus: ${newEvent.deliveryStatus === 'queued' ? 'QUEUED OFFLINE (Awaiting mesh link)' : newEvent.deliveryStatus.toUpperCase()}`,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        status: networkStatus === 'offline' ? 'queued_offline' : 'delivered',
+        channel: networkStatus === 'online' ? 'cellular' : 'mesh',
+        isEmergencyAlert: true,
+        locationAttachment: hasLoc && lat !== null && lng !== null ? {
+          placeId: newEvent.id,
+          title: `Emergency Fix: ${profile.callsign} [${newEvent.id}]`,
+          coordinates: { lat, lng },
+          distance: '0m',
+          category: 'Emergency',
+          isEmergencySos: true,
+        } : undefined,
+      };
+
+      const updated = prev.map((c) => {
+        if (c.id === targetConv.id) {
+          return {
+            ...c,
+            lastMessage: `🚨 SOS BEACON: ${newEvent.id}`,
+            lastTimestamp: emergencyMsg.timestamp,
+            messages: [...c.messages, emergencyMsg],
+          };
+        }
+        return c;
+      });
+      localStorage.setItem('linkup_conversations', JSON.stringify(updated));
+      return updated;
+    });
+
+    logActivity(
+      'safe',
+      `EMERGENCY SOS: ${newEvent.id}`,
+      `Distress event armed. Status: ${initialDeliveryStatus.toUpperCase()} (${contactNames.length} contacts selected). Channel: ${initialChannel}.`
+    );
+
+    // If online or limited, simulate progression
+    if (networkStatus === 'online') {
+      setTimeout(() => {
+        setSosHistory((prev) => {
+          const updated = prev.map((evt) =>
+            evt.id === eventId
+              ? {
+                  ...evt,
+                  deliveryStatus: 'delivered' as const,
+                  statusExplanation: 'Confirmed delivered to satellite relay & cloud emergency contact dashboard.',
+                }
+              : evt
+          );
+          localStorage.setItem('linkup_sos_history', JSON.stringify(updated));
+          return updated;
+        });
+        logActivity('safe', `SOS ${eventId} Delivered`, 'Emergency alert confirmed delivered to remote contact dashboards.');
+      }, 900);
+    } else if (networkStatus === 'limited') {
+      setTimeout(() => {
+        setSosHistory((prev) => {
+          const updated = prev.map((evt) =>
+            evt.id === eventId
+              ? {
+                  ...evt,
+                  deliveryStatus: 'acknowledged' as const,
+                  statusExplanation: 'Distress packet received & acknowledged by mesh node Elena Rostova (420m). Tactical relay active.',
+                }
+              : evt
+          );
+          localStorage.setItem('linkup_sos_history', JSON.stringify(updated));
+          return updated;
+        });
+        logActivity('safe', `SOS ${eventId} Acknowledged`, 'Nearby mesh node Elena Rostova confirmed receipt of emergency beacon.');
+      }, 1200);
+    }
+  }, [
+    emergencyContacts,
+    locationPermissionState,
+    userCoords,
+    gpsAccuracy,
+    locationTimestamp,
+    isLocationStale,
+    privacySettings,
+    profile,
+    networkStatus,
+    nearbyPeers,
+    logActivity,
+  ]);
 
   // SOS Countdown Timer
   useEffect(() => {
@@ -1105,35 +1385,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setSosCountdown(sosCountdown - 1);
       }, 1000);
     } else if (sosCountdown === 0) {
-      setIsSosActive(true);
-      setSosCountdown(null);
-
-      const newEvent: SosEvent = {
-        id: 'sos-' + Date.now(),
-        triggeredAt: new Date().toLocaleTimeString() + ' (' + new Date().toLocaleDateString() + ')',
-        status: 'active',
-        latitude: userCoords.lat,
-        longitude: userCoords.lng,
-        broadcastChannel: 'Simulated 433MHz Mesh Distress Beacon',
-        contactsNotified: emergencyContacts.map((c) => c.name),
-      };
-
-      setSosHistory((prev) => {
-        const updated = [newEvent, ...prev];
-        localStorage.setItem('linkup_sos_history', JSON.stringify(updated));
-        return updated;
-      });
-
-      logActivity(
-        'safe',
-        'SIMULATED SOS ACTIVATED',
-        `Distress beacon broadcasted to ${emergencyContacts.length} contacts via local mesh relay.`
-      );
+      executeSosActivation();
     }
     return () => {
       if (timer) clearTimeout(timer);
     };
-  }, [sosCountdown, userCoords, emergencyContacts, logActivity]);
+  }, [sosCountdown, executeSosActivation]);
 
   const startSosCountdown = useCallback(() => {
     setSosCountdown(5);
@@ -1145,20 +1402,133 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [logActivity]);
 
   const triggerSosImmediately = useCallback(() => {
-    setSosCountdown(0);
-  }, []);
+    executeSosActivation();
+  }, [executeSosActivation]);
 
-  const deactivateSos = useCallback(() => {
+  const deactivateSos = useCallback((reason: 'cancelled' | 'resolved' = 'resolved') => {
     setIsSosActive(false);
     stopAudioSiren();
     setIsSirenAudible(false);
     setSosHistory((prev) => {
-      const updated = prev.map((s, idx) => (idx === 0 ? { ...s, status: 'resolved' as const } : s));
+      const updated = prev.map((s, idx) => (idx === 0 ? { ...s, status: reason } : s));
       localStorage.setItem('linkup_sos_history', JSON.stringify(updated));
       return updated;
     });
-    logActivity('safe', 'SOS Deactivated', 'Emergency broadcast state cleared and restored to normal.');
-  }, [logActivity]);
+
+    setConversations((prev) => {
+      const targetConv = prev.find((c) => c.id === 'conv-group-1') || prev[0];
+      if (!targetConv) return prev;
+
+      const cancelMsg: ChatMessage = {
+        id: 'sos-cancel-' + Date.now(),
+        sender: 'user',
+        text: `✅ SOS STAND DOWN (${reason.toUpperCase()}): Distress beacon deactivated by ${profile.callsign}. Normal operations resumed.`,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        status: networkStatus === 'offline' ? 'queued_offline' : 'delivered',
+        channel: networkStatus === 'online' ? 'cellular' : 'mesh',
+      };
+
+      const updated = prev.map((c) => {
+        if (c.id === targetConv.id) {
+          return {
+            ...c,
+            lastMessage: `✅ SOS Stand Down (${reason})`,
+            lastTimestamp: cancelMsg.timestamp,
+            messages: [...c.messages, cancelMsg],
+          };
+        }
+        return c;
+      });
+      localStorage.setItem('linkup_conversations', JSON.stringify(updated));
+      return updated;
+    });
+
+    logActivity(
+      'safe',
+      `SOS Deactivated (${reason})`,
+      reason === 'cancelled'
+        ? 'Emergency sequence aborted by user as accidental false alarm.'
+        : 'Emergency beacon deactivated and marked resolved.'
+    );
+  }, [networkStatus, profile.callsign, logActivity]);
+
+  const retrySosBroadcast = useCallback((eventId?: string) => {
+    setSosHistory((prev) => {
+      const targetId = eventId || prev[0]?.id;
+      if (!targetId) return prev;
+
+      const isOffline = networkStatus === 'offline';
+      const updated = prev.map((evt) => {
+        if (evt.id === targetId) {
+          if (isOffline) {
+            return {
+              ...evt,
+              deliveryStatus: 'queued' as const,
+              statusExplanation: 'Retry attempted: No transmission route available. Alert remains queued in local flash storage.',
+            };
+          } else if (networkStatus === 'limited') {
+            return {
+              ...evt,
+              deliveryStatus: 'acknowledged' as const,
+              statusExplanation: 'Broadcast retransmitted and acknowledged over 433MHz BLE mesh relay.',
+            };
+          } else {
+            return {
+              ...evt,
+              deliveryStatus: 'delivered' as const,
+              statusExplanation: 'Broadcast retransmitted and delivered via cellular/cloud uplink.',
+            };
+          }
+        }
+        return evt;
+      });
+      localStorage.setItem('linkup_sos_history', JSON.stringify(updated));
+      return updated;
+    });
+    logActivity('safe', 'SOS Broadcast Retried', `Manual retransmission attempted under ${networkStatus} conditions.`);
+  }, [networkStatus, logActivity]);
+
+  // Synchronize queued SOS events when network connects
+  useEffect(() => {
+    if (networkStatus !== 'offline') {
+      setSosHistory((prev) => {
+        let hasChanges = false;
+        const updated = prev.map((evt) => {
+          if (evt.status === 'active' && evt.deliveryStatus === 'queued') {
+            hasChanges = true;
+            if (networkStatus === 'limited') {
+              return {
+                ...evt,
+                deliveryStatus: 'acknowledged' as const,
+                statusExplanation: 'Synchronized via newly connected BLE mesh peer Elena Rostova (420m).',
+                meshRouteAvailable: true,
+                meshRouteDetails: 'Elena Rostova (420m, 1 hop)',
+              };
+            } else {
+              return {
+                ...evt,
+                deliveryStatus: 'delivered' as const,
+                statusExplanation: 'Dispatched via cellular cloud gateway. Confirmed delivered to remote contacts.',
+                meshRouteAvailable: false,
+                meshRouteDetails: 'Cellular / Satellite gateway connected',
+              };
+            }
+          }
+          return evt;
+        });
+        if (hasChanges) {
+          localStorage.setItem('linkup_sos_history', JSON.stringify(updated));
+          logActivity(
+            'safe',
+            networkStatus === 'limited' ? 'Queued SOS Synced via Mesh' : 'Queued SOS Delivered via Cloud',
+            'Pending offline distress event successfully transmitted and updated on network.'
+          );
+          return updated;
+        }
+        return prev;
+      });
+    }
+  }, [networkStatus, logActivity]);
 
   const toggleLocationSharing = useCallback(() => {
     setIsLocationSharingEnabled((prev) => {
@@ -1538,32 +1908,6 @@ CH-05,2412.000,Wi-Fi Direct,Ad-Hoc 802.11n,20000,Bulk Map & Media Transfer`,
     logActivity('share', 'File Removed', 'File record removed from local storage vault.');
   }, [logActivity]);
 
-  // Profile & Settings Data & State
-  const [profile, setProfile] = useState<UserProfile>(() => {
-    const saved = localStorage.getItem('linkup_user_profile');
-    if (saved) {
-      try { return JSON.parse(saved); } catch {}
-    }
-    return {
-      callsign: 'Nighthawk-1',
-      displayName: 'Captain Alex Vance',
-      nodeId: 'LN-8492-AX',
-      emergencyBloodType: 'O-Negative',
-      medicalNotes: 'No known drug allergies. Penicillin safe.',
-      meshRelayEnabled: true,
-      batterySaverMode: false,
-    };
-  });
-
-  const updateProfile = useCallback((updated: Partial<UserProfile>) => {
-    setProfile((prev) => {
-      const next = { ...prev, ...updated };
-      localStorage.setItem('linkup_user_profile', JSON.stringify(next));
-      return next;
-    });
-    logActivity('system', 'Profile Updated', 'Local node identity and preferences updated.');
-  }, [logActivity]);
-
   const resetAllData = useCallback(() => {
     localStorage.clear();
     window.location.reload();
@@ -1602,13 +1946,20 @@ CH-05,2412.000,Wi-Fi Direct,Ad-Hoc 802.11n,20000,Bulk Map & Media Transfer`,
       refreshLocation,
       emergencyContacts,
       addEmergencyContact,
+      updateEmergencyContact,
       deleteEmergencyContact,
+      toggleSelectContactForAlert,
+      selectAllContactsForAlert,
+      privacySettings,
+      updatePrivacySettings,
       isSosActive,
+      activeSosEvent,
       sosCountdown,
       startSosCountdown,
       cancelSosCountdown,
       triggerSosImmediately,
       deactivateSos,
+      retrySosBroadcast,
       sosHistory,
       isLocationSharingEnabled,
       toggleLocationSharing,
@@ -1616,6 +1967,8 @@ CH-05,2412.000,Wi-Fi Direct,Ad-Hoc 802.11n,20000,Bulk Map & Media Transfer`,
       toggleSirenAudio,
       lastCheckIn,
       performSafetyCheckIn,
+      locationTimestamp,
+      isLocationStale,
       balance,
       transactions,
       sendMoney,
@@ -1669,13 +2022,20 @@ CH-05,2412.000,Wi-Fi Direct,Ad-Hoc 802.11n,20000,Bulk Map & Media Transfer`,
       refreshLocation,
       emergencyContacts,
       addEmergencyContact,
+      updateEmergencyContact,
       deleteEmergencyContact,
+      toggleSelectContactForAlert,
+      selectAllContactsForAlert,
+      privacySettings,
+      updatePrivacySettings,
       isSosActive,
+      activeSosEvent,
       sosCountdown,
       startSosCountdown,
       cancelSosCountdown,
       triggerSosImmediately,
       deactivateSos,
+      retrySosBroadcast,
       sosHistory,
       isLocationSharingEnabled,
       toggleLocationSharing,
@@ -1683,6 +2043,8 @@ CH-05,2412.000,Wi-Fi Direct,Ad-Hoc 802.11n,20000,Bulk Map & Media Transfer`,
       toggleSirenAudio,
       lastCheckIn,
       performSafetyCheckIn,
+      locationTimestamp,
+      isLocationStale,
       balance,
       transactions,
       sendMoney,

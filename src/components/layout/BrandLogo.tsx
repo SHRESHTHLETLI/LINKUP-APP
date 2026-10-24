@@ -1,73 +1,49 @@
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import { useApp } from '../../context/AppContext';
-import { Upload, CheckCircle2, Image as ImageIcon } from 'lucide-react';
 
 interface BrandLogoProps {
-  size?: 'sm' | 'md' | 'lg';
-  showUploadHint?: boolean;
+  size?: 'sm' | 'md' | 'lg' | 'xl';
+  showText?: boolean;
 }
 
-export const BrandLogo: React.FC<BrandLogoProps> = ({ size = 'md', showUploadHint = true }) => {
-  const { approvedLogoUrl, setApprovedLogo, setIsLogoModalOpen } = useApp();
-  const [assetChecked, setAssetChecked] = useState(false);
+export const BrandLogo: React.FC<BrandLogoProps> = ({ 
+  size = 'md', 
+  showText = true 
+}) => {
+  const { approvedLogoUrl, setIsLogoModalOpen } = useApp();
+  const logoSrc = approvedLogoUrl || '/assets/aistudio/image_8048039e.png';
 
-  // Check if an approved logo file already exists in /public (linkup-logo.svg or linkup-logo.png)
-  useEffect(() => {
-    if (!approvedLogoUrl && !assetChecked) {
-      setAssetChecked(true);
-      const testPaths = ['/linkup-logo.svg', '/linkup-logo.png'];
-      const checkNext = async (idx: number) => {
-        if (idx >= testPaths.length) return;
-        try {
-          const res = await fetch(testPaths[idx], { method: 'HEAD' });
-          if (res.ok) {
-            setApprovedLogo(testPaths[idx]);
-          } else {
-            checkNext(idx + 1);
-          }
-        } catch {
-          checkNext(idx + 1);
-        }
-      };
-      checkNext(0);
-    }
-  }, [approvedLogoUrl, assetChecked, setApprovedLogo]);
+  const sizeClasses = {
+    sm: 'h-8 w-8',
+    md: 'h-9 w-9 sm:h-10 sm:w-10',
+    lg: 'h-14 w-14 sm:h-16 sm:w-16',
+    xl: 'h-24 w-24 sm:h-28 sm:w-28',
+  };
 
-  const heightClass = size === 'sm' ? 'h-6' : size === 'lg' ? 'h-10' : 'h-8';
-
-  if (approvedLogoUrl) {
-    return (
-      <div 
-        onClick={() => setIsLogoModalOpen(true)}
-        className="flex items-center gap-2 cursor-pointer group"
-        title="Approved LINKUP Logo (Click to manage)"
-      >
-        <img 
-          src={approvedLogoUrl} 
-          alt="LINKUP Logo" 
-          className={`${heightClass} w-auto object-contain transition-transform group-hover:scale-105`} 
-        />
-      </div>
-    );
-  }
-
-  // Exact typographic brand fallback with honest upload request
   return (
     <div 
       onClick={() => setIsLogoModalOpen(true)}
-      className="flex items-center gap-2.5 cursor-pointer group"
-      title="Click to upload the approved LINKUP logo asset"
+      className="flex items-center gap-3 cursor-pointer group select-none"
+      title="Approved LINKUP Brand Logo (Click to manage)"
     >
-      <div className="flex items-center font-black tracking-widest text-white text-lg sm:text-xl font-mono">
-        <span className="text-white">LINK</span>
-        <span className="text-cyan-400">UP</span>
+      <div className="relative shrink-0 flex items-center justify-center">
+        <img 
+          src={logoSrc} 
+          alt="LINKUP Logo" 
+          className={`${sizeClasses[size]} object-contain rounded-full drop-shadow-[0_0_15px_rgba(34,211,238,0.4)] transition-transform duration-300 group-hover:scale-105`} 
+        />
       </div>
 
-      {showUploadHint && (
-        <span className="hidden sm:inline-flex items-center gap-1 text-[11px] font-medium text-cyan-400/80 hover:text-cyan-300 transition-colors bg-cyan-950/40 border border-cyan-500/20 px-2 py-0.5 rounded">
-          <Upload className="w-3 h-3" />
-          <span>Upload Logo</span>
-        </span>
+      {showText && size !== 'sm' && (
+        <div className="flex flex-col">
+          <div className="flex items-center font-black tracking-widest text-white text-base sm:text-lg font-mono leading-none">
+            <span className="text-white">LINK</span>
+            <span className="text-cyan-400">UP</span>
+          </div>
+          <span className="text-[9px] font-mono tracking-wider text-cyan-300/80 uppercase mt-0.5">
+            Beyond Boundaries
+          </span>
+        </div>
       )}
     </div>
   );

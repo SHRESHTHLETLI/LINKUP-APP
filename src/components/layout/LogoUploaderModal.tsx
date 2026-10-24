@@ -1,6 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { useApp } from '../../context/AppContext';
-import { X, Upload, Trash2, CheckCircle2, ShieldCheck, AlertCircle } from 'lucide-react';
+import { X, Upload, Trash2, CheckCircle2, ShieldCheck, AlertCircle, RotateCcw } from 'lucide-react';
 
 export const LogoUploaderModal: React.FC = () => {
   const { isLogoModalOpen, setIsLogoModalOpen, approvedLogoUrl, setApprovedLogo, logActivity } = useApp();
@@ -114,15 +114,15 @@ export const LogoUploaderModal: React.FC = () => {
                 </div>
               )}
 
-              {approvedLogoUrl && (
+              {approvedLogoUrl && approvedLogoUrl !== '/assets/aistudio/image_8048039e.png' ? (
                 <button
-                  onClick={() => setApprovedLogo(null)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 rounded-lg transition-colors border border-rose-500/20"
+                  onClick={() => setApprovedLogo('/assets/aistudio/image_8048039e.png')}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-cyan-400 hover:text-cyan-300 hover:bg-cyan-500/10 rounded-lg transition-colors border border-cyan-500/20"
                 >
-                  <Trash2 className="w-3.5 h-3.5" />
-                  <span>Remove</span>
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>Restore Official Logo</span>
                 </button>
-              )}
+              ) : null}
             </div>
           </div>
 

@@ -131,16 +131,42 @@ export interface EmergencyContact {
   priority: number;
   alertViaMesh: boolean;
   alertViaSms: boolean;
+  selectedForAlert?: boolean;
+  radioCallsign?: string;
+  notes?: string;
+}
+
+export type SosAlertStatus = 'preparing' | 'queued' | 'sent' | 'delivered' | 'acknowledged' | 'failed';
+
+export interface PrivacySettings {
+  includeMedicalNotes: boolean;
+  includeBloodType: boolean;
+  includeCallsign: boolean;
+  maskPhoneNumbers: boolean;
 }
 
 export interface SosEvent {
   id: string;
   triggeredAt: string;
   status: 'active' | 'cancelled' | 'resolved';
-  latitude: number;
-  longitude: number;
+  deliveryStatus: SosAlertStatus;
+  statusExplanation?: string;
+  latitude: number | null;
+  longitude: number | null;
+  accuracyMeters?: number | null;
+  locationTimestamp?: string;
+  isLocationStale?: boolean;
+  hasLocationPermission: boolean;
   broadcastChannel: string;
   contactsNotified: string[];
+  contactIds?: string[];
+  sharedMedicalInfo?: {
+    bloodType?: string;
+    callsign?: string;
+    notes?: string;
+  };
+  meshRouteAvailable?: boolean;
+  meshRouteDetails?: string;
 }
 
 export interface Transaction {
